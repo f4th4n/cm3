@@ -1,9 +1,9 @@
-import { createListenKey, keepAliveListenKey } from "../risk_control/user_data_api";
+import { createHmac } from "crypto";
 
 const isTestnet = Bun.env.BINANCE_TESTNET === "true";
-const wsBase = isTestnet
-  ? "wss://testnet.binance.vision"
-  : "wss://stream.binance.com:9443";
+const wsUrl = isTestnet
+  ? "wss://ws-api.testnet.binance.vision/ws-api/v3"
+  : "wss://ws-api.binance.com:443/ws-api/v3";
 
 type AccountUpdate = {
   e: "outboundAccountPosition";
@@ -32,55 +32,62 @@ type UserDataEvent = AccountUpdate | BalanceUpdate | OrderUpdate;
 
 let reconnectDelay = 1000;
 
-export async function startUserDataStream(): Promise<void> {
-  let listenKey: string;
-  try {
-    listenKey = await createListenKey();
-  } catch (err) {
-    console.error("Failed to create listenKey:", err);
-    setTimeout(() => {
-      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
-      startUserDataStream();
-    }, reconnectDelay);
+function signPayload(payload: string, secretKey: string): string {
+  return createHmac("sha256", secretKey).update(payload).digest("hex");
+}
+
+export function startUserDataStream(): void {
+  const apiKey = Bun.env.BINANCE_API_KEY;
+  const secretKey = Bun.env.BINANCE_SECRET_KEY;
+
+  if (!apiKey || !secretKey) {
+    console.error("BINANCE_API_KEY and BINANCE_SECRET_KEY are required for user data stream");
     return;
   }
 
-  const ws = new WebSocket(`${wsBase}/ws/${listenKey}`);
-
-  const keepAliveTimer = setInterval(async () => {
-    try {
-      await keepAliveListenKey(listenKey);
-    } catch (err) {
-      console.error("Failed to keep alive listenKey:", err);
-    }
-  }, 29 * 60 * 1000);
+  const ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
     reconnectDelay = 1000;
-    console.log("Connected to Binance user data stream");
+    console.log("Connected to Binance WebSocket API");
+
+    const timestamp = Date.now();
+    const payload = `apiKey=${apiKey}&timestamp=${timestamp}`;
+    const signature = signPayload(payload, secretKey);
+
+    ws.send(JSON.stringify({
+      id: crypto.randomUUID(),
+      method: "userDataStream.subscribe.signature",
+      params: { apiKey, timestamp, signature },
+    }));
   };
 
   ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data as string) as UserDataEvent;
+    const msg = JSON.parse(event.data as string);
 
-    if (msg.e === "outboundAccountPosition") {
-      console.log("[AccountUpdate]", { time: msg.E, balances: msg.B });
-    } else if (msg.e === "balanceUpdate") {
-      console.log("[BalanceUpdate]", { time: msg.E, asset: msg.a, delta: msg.d });
-    } else if (msg.e === "executionReport") {
+    // Skip subscribe response messages
+    if ("status" in msg) return;
+
+    const ev = msg.event as UserDataEvent;
+    if (!ev?.e) return;
+
+    if (ev.e === "outboundAccountPosition") {
+      console.log("[AccountUpdate]", { time: ev.E, balances: ev.B });
+    } else if (ev.e === "balanceUpdate") {
+      console.log("[BalanceUpdate]", { time: ev.E, asset: ev.a, delta: ev.d });
+    } else if (ev.e === "executionReport") {
       console.log("[OrderUpdate]", {
-        time: msg.E,
-        symbol: msg.s,
-        side: msg.S,
-        status: msg.X,
-        qty: msg.l,
-        price: msg.L,
+        time: ev.E,
+        symbol: ev.s,
+        side: ev.S,
+        status: ev.X,
+        qty: ev.l,
+        price: ev.L,
       });
     }
   };
 
   ws.onclose = () => {
-    clearInterval(keepAliveTimer);
     console.log(`User data stream closed. Reconnecting in ${reconnectDelay}ms...`);
     setTimeout(() => {
       reconnectDelay = Math.min(reconnectDelay * 2, 30000);
