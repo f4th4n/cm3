@@ -72,11 +72,11 @@ export function startUserDataStream(): void {
     if (!ev?.e) return;
 
     if (ev.e === "outboundAccountPosition") {
-      console.log("[AccountUpdate]", { time: ev.E, balances: ev.B });
+      console.log("[User Data] [AccountUpdate]", { time: ev.E, balances: ev.B });
     } else if (ev.e === "balanceUpdate") {
-      console.log("[BalanceUpdate]", { time: ev.E, asset: ev.a, delta: ev.d });
+      console.log("[User Data] [BalanceUpdate]", { time: ev.E, asset: ev.a, delta: ev.d });
     } else if (ev.e === "executionReport") {
-      console.log("[OrderUpdate]", {
+      console.log("[User Data] [OrderUpdate]", {
         time: ev.E,
         symbol: ev.s,
         side: ev.S,
